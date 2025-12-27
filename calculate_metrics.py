@@ -20,6 +20,10 @@ def load_data(file_path):
             sources.append(data["source"])
             hypotheses.append(data["generated"])
             references.append(data["reference"])
+
+    hypotheses = [h.split("(")[-1] for h in hypotheses]
+    hypotheses = [h.split(":")[-1] for h in hypotheses]
+    hypotheses = [h.split('\n')[0] for h in hypotheses]
             
     return sources, hypotheses, references
 
@@ -72,11 +76,15 @@ def main():
     comet_score = calculate_comet(sources, hypotheses, references, gpus=gpus)
     print(f"--- COMET Score:     {comet_score:.4f} ---")
 
-    summary_path = args.input_file.replace(".jsonl", "_scores.txt")
-    with open(summary_path, "w") as f:
+    summary_folder = os.path.dirname(args.input_file)
+    summary_path = os.path.join(summary_folder, "results.txt")
+    with open(summary_path, "a") as f:
+        f.write('\n')
         f.write(f"File: {args.input_file}\n")
         f.write(f"SacreBLEU: {bleu_score:.2f}\n")
         f.write(f"COMET: {comet_score:.4f}\n")
+        f.write('\n')
+
     print(f"\nScores saved to {summary_path}")
 
 if __name__ == "__main__":

@@ -1,71 +1,113 @@
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
-from extract_feats import load_llama
 import os
 import json
+import argparse
+import sys
+from extract_hidden_features import load_llama
 
-# --- Configuration ---
-SOURCE_LANG_CODE = "fra_Latn"   # Example: French
-TARGET_LANG_CODE = "eng_Latn"   # English
-BATCH_SIZE = 4
-MAX_NEW_TOKENS = 64
-DEBUG_MODE = False 
-OUTPUT_FOLDER = "data/inference_align_outputs" 
+# --- Constants ---
+LANG_ID_TO_NAME = {
+    "eng_Latn": "English",
+    "fra_Latn": "French",
+    "spa_Latn": "Spanish",
+    "swh_Latn": "Swahili",
+    "npi_Deva": "Nepali",
+    "deu_Latn": "German",
+    "hin_Deva": "Hindi",
+    "zho_Hans": "Chinese"
+}
 
 def load_flores_data(lang_code, split="devtest"):
     print(f"Loading FLORES {split} for {lang_code}...")
     ds = load_dataset("facebook/flores", lang_code, split=split, trust_remote_code=True)
     return ds['sentence']
 
-if __name__ == "__main__":
-    src_sentences = load_flores_data(SOURCE_LANG_CODE, split="devtest")
-    ref_sentences = load_flores_data(TARGET_LANG_CODE, split="devtest")
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run Baseline Llama generation (No Intervention).")
     
-    if DEBUG_MODE:
-        src_sentences = src_sentences[:5]
-        ref_sentences = ref_sentences[:5]
+    parser.add_argument("--source_lang", type=str, default="npi_Deva", help="Source language FLORES code")
+    parser.add_argument("--target_lang", type=str, default="eng_Latn", help="Target language FLORES code")
+    
+    parser.add_argument("--output_dir", type=str, default="nepali", help="Folder to save results")
+    parser.add_argument("--model_id", type=str, default="meta-llama/Meta-Llama-3-8B-Instruct", help="HF Model ID")
+    
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for generation")
+    parser.add_argument("--max_new_tokens", type=int, default=64, help="Max tokens to generate")
+    
+    parser.add_argument("--debug", action="store_true", help="Run on a small subset (20 samples) for debugging")
+    parser.add_argument("--no_quant", action="store_true", help="Disable 4-bit quantization")
 
-    model, tokenizer = load_llama(quantized=True)
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    # Create output directory
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+
+    # Load Data
+    src_sentences = load_flores_data(args.source_lang, split="devtest")
+    ref_sentences = load_flores_data(args.target_lang, split="devtest")
     
-    # tokenizer.padding_side = "left" 
+    if args.debug:
+        print("DEBUG MODE: Processing only 20 samples.")
+        src_sentences = src_sentences[:20]
+        ref_sentences = ref_sentences[:20]
+
+    # Load Model
+    model, tokenizer = load_llama(args.model_id, quantized=not args.no_quant)
+    
+    # Configure Tokenizer for Batch Generation (Left Padding is crucial)
+    tokenizer.padding_side = "left" 
     tokenizer.pad_token = tokenizer.eos_token
+
+    # Determine Language Name for Prompt
+    src_lang_name = LANG_ID_TO_NAME.get(args.source_lang, args.source_lang)
 
     results = []
     print(f"Starting BASELINE generation on {len(src_sentences)} sentences...")
     
-    for i in tqdm(range(0, len(src_sentences), BATCH_SIZE)):
-        batch_src = src_sentences[i : i + BATCH_SIZE]
+    # Batch Processing Loop
+    for i in tqdm(range(0, len(src_sentences), args.batch_size)):
+        batch_src = src_sentences[i : i + args.batch_size]
         
-        # Use exact same prompt template as intervention script
-        prompts = [f"Translate to English: {s}" for s in batch_src]
+        # Dynamic Prompt Construction
+        prompts = [
+            f"Translate the following {src_lang_name} source sentence to English\nSource: {s}\nEnglish:" 
+            for s in batch_src
+        ]
         
+        # Tokenize
         inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(model.device)
         input_length = inputs.input_ids.shape[1]
 
+        # Generate
         with torch.no_grad():
             output_ids = model.generate(
                 **inputs, 
-                max_new_tokens=MAX_NEW_TOKENS, 
+                max_new_tokens=args.max_new_tokens, 
                 do_sample=False, 
                 pad_token_id=tokenizer.eos_token_id
             )
         
+        # Decode
         decoded_batch = tokenizer.batch_decode(output_ids[:, input_length:], skip_special_tokens=True)
         
-        for src, gen, ref in zip(batch_src, decoded_batch, ref_sentences[i : i + BATCH_SIZE]):
-            clean_gen = gen.strip()
+        # Store Results
+        current_refs = ref_sentences[i : i + args.batch_size]
+        for src, gen, ref in zip(batch_src, decoded_batch, current_refs):
             results.append({
                 "source": src,
-                "generated": clean_gen,
+                "generated": gen.strip(),
                 "reference": ref
             })
 
-    if not os.path.exists(OUTPUT_FOLDER):
-        os.makedirs(OUTPUT_FOLDER)
-        
-    # Naming convention: baseline_{src}_to_{tgt}.jsonl
-    output_path = os.path.join(OUTPUT_FOLDER, f"baseline_{SOURCE_LANG_CODE}_to_{TARGET_LANG_CODE}.jsonl")
+    # Save Results
+    filename = f"baseline_{args.source_lang}_to_{args.target_lang}.jsonl"
+    output_path = os.path.join(args.output_dir, filename)
     
     with open(output_path, "w", encoding="utf-8") as f_out:
         for item in results:
