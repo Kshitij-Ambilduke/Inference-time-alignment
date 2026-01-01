@@ -1,17 +1,32 @@
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
-from extract_hidden_states import load_llama
+from extract_hidden_features import load_llama
 import os
+import random
+import argparse
+import sys
 
-# --- Config ---
-SOURCE_LANG_CODE = "npi_Deva"
-TARGET_LANG_CODE = "eng_Latn"
-ALPHA = 0.4 
-OUTPUT_FILE = "/media/stoch-lab/Workspace/kshitij/nepali/flores_npi_Deva_to_eng_Latn_cascading_alignment_matrices.pt"
-BATCH_SIZE = 4
-LAMBDA_REG = 1e-2
-OLD_FEATURES_FILE = "/media/stoch-lab/Workspace/kshitij/nepali/flores_npi_Deva_to_eng_Latn.pt"
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run cascading layer-wise alignment training.")
+    
+    # Path Arguments
+    parser.add_argument("--output_file", type=str, required=True, help="Path to save the output .pt file")
+    parser.add_argument("--old_features_file", type=str, required=True, help="Path to the pre-extracted target (English) features .pt file")
+    
+    # Model & Data Arguments
+    parser.add_argument("--model_id", type=str, default="meta-llama/Meta-Llama-3-8B-Instruct", help="Hugging Face model ID")
+    parser.add_argument("--source_lang", type=str, default="swh_Latn", help="FLORES source language code")
+    parser.add_argument("--target_lang", type=str, default="eng_Latn", help="FLORES target language code")
+    parser.add_argument("--num_samples", type=int, default=500, help="Number of random samples to use for training")
+    
+    # Hyperparameters
+    parser.add_argument("--alpha", type=float, default=0.4, help="Intervention strength (alpha)")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for processing")
+    parser.add_argument("--lambda_reg", type=float, default=1e-2, help="Ridge regression regularization strength")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+
+    return parser.parse_args()
 
 def ridge_dual(X, Y, lam=1e-2):
     # Solves W such that X @ W ≈ Y
@@ -30,7 +45,8 @@ def get_layer_outputs(model, tokenizer, sentences, batch_size=4, target_layer_id
     """
     layer_outputs = []
     
-    for i in range(0, len(sentences), batch_size):
+    # Simple progress bar for batches
+    for i in tqdm(range(0, len(sentences), batch_size), desc=f"Layer {target_layer_idx} extraction", leave=False):
         batch = sentences[i : i + batch_size]
         inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to(model.device)
         
@@ -46,7 +62,9 @@ def get_layer_outputs(model, tokenizer, sentences, batch_size=4, target_layer_id
         # We want the output of the specific layer index
         hidden_idx = target_layer_idx + 1
         
-        # Extract last token (handling left padding)
+        # Extract last token (handling left padding if necessary, though llama usually rights pads)
+        # Note: If your tokenizer uses left padding, -1 is correct. If right padding, ensure attention_mask usage or explicit index.
+        # Assuming standard Llama right-padding behavior or unpadded specific tokens:
         batch_last_states = outputs.hidden_states[hidden_idx][:, -1, :]
         layer_outputs.append(batch_last_states)
         
@@ -54,16 +72,19 @@ def get_layer_outputs(model, tokenizer, sentences, batch_size=4, target_layer_id
 
 def get_intervention_hook(W, alpha):
     # Standard hook to apply the intervention PERMANENTLY during training
-    W = W.to("cuda" if torch.cuda.is_available() else "cpu").float()
+    # Ensure W is on the correct device when the hook fires
     
     def hook_fn(module, args, output):
         if isinstance(output, tuple): h = output[0]
         else: h = output
         
+        # Move W to the device of the input tensor dynamically to avoid device mismatches
+        W_device = W.to(h.device).float()
+        
         # Apply to ALL tokens because we need the context to drift correctly
         # for the next layer's calculation.
         h_f32 = h.float()
-        proj = torch.matmul(h_f32, W)
+        proj = torch.matmul(h_f32, W_device)
         intervention = alpha * proj
         
         # Inject
@@ -75,27 +96,50 @@ def get_intervention_hook(W, alpha):
 
 # --- Main Cascading Loop ---
 if __name__ == "__main__":
+    args = parse_args()
+    
+    # Ensure output directory exists
+    output_dir = os.path.dirname(args.output_file)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
     # 1. Load Data & Model
-    print("Loading Data...")
-    ds_src = load_dataset("facebook/flores", SOURCE_LANG_CODE, split="devtest")['sentence'][:500]
-    ds_tgt = load_dataset("facebook/flores", TARGET_LANG_CODE, split="devtest")['sentence'][:500]
+    print(f"Loading Data (Source: {args.source_lang}, Target: {args.target_lang})...")
+    ds_src = load_dataset("facebook/flores", args.source_lang, split="dev")['sentence']
+    ds_tgt = load_dataset("facebook/flores", args.target_lang, split="dev")['sentence']
+
+    # Select random samples for training
+    random.seed(args.seed)
+    if len(ds_src) < args.num_samples:
+        print(f"Warning: requested {args.num_samples} samples but dataset only has {len(ds_src)}. Using full dataset.")
+        selected_indices = range(len(ds_src))
+    else:
+        selected_indices = random.sample(range(len(ds_src)), args.num_samples)
     
-    model, tokenizer = load_llama(quantized=True) # Ensure hooks can be registered
+    ds_src = [ds_src[i] for i in selected_indices]
+    ds_tgt = [ds_tgt[i] for i in selected_indices]
+
+    print(f"Loading Model: {args.model_id}...")
+    # Ensure hooks can be registered (quantized=True usually works with bitsandbytes)
+    model, tokenizer = load_llama(model_id=args.model_id, quantized=True) 
     
-    # 2. Extract TARGET (English) features once (they don't change)
-    print("Pre-extracting English Targets...")
-    # This is still fast because we don't intervene on English
-    # You can reuse your old extraction code for this part or run it here.
-    # For simplicity, let's assume you have H_t_dict loaded from your old .pt file:
-    old_data = torch.load(OLD_FEATURES_FILE)
-    H_t_dict = old_data["target"] # Dictionary of tensors
-    
+    # 2. Load Pre-extracted Targets
+    print(f"Loading pre-extracted targets from {args.old_features_file}...")
+    if not os.path.exists(args.old_features_file):
+        print(f"Error: Old features file not found at {args.old_features_file}")
+        sys.exit(1)
+        
+    old_data = torch.load(args.old_features_file)
+    # Check if key is 'target' or 'english' or just the dict, adapt based on your specific file structure
+    # Assuming structure from prompt:
+    H_t_dict = old_data["target"]
+
     alignment_matrices = {}
     active_hooks = []
     
     # 3. Iterate Layers
     num_layers = len(model.model.layers)
-    print(f"Starting Cascading Training for {num_layers} layers...")
+    print(f"Starting Cascading Training for {num_layers} layers with Alpha={args.alpha}...")
     
     for layer_idx in range(num_layers):
         print(f"--- Processing Layer {layer_idx} ---")
@@ -103,21 +147,26 @@ if __name__ == "__main__":
         # A. Extract Source Features for this layer
         # Since 'active_hooks' are registered, this forward pass 
         # includes the cumulative effect of layers 0 to layer_idx-1
-        X = get_layer_outputs(model, tokenizer, ds_src, BATCH_SIZE, layer_idx)
+        X = get_layer_outputs(model, tokenizer, ds_src, args.batch_size, layer_idx)
         X = X.double().cuda()
         
         # B. Get Target Features
+        # Ensure we have data for this layer
+        if layer_idx not in H_t_dict:
+            print(f"Warning: No target data found for layer {layer_idx}. Skipping or stopping.")
+            break
+
         Y = H_t_dict[layer_idx].double().cuda()
         
         # C. Train Matrix W
         # Map (Drifted Source) -> (Clean Target)
-        W = ridge_dual(X, Y, lam=LAMBDA_REG)
+        W = ridge_dual(X, Y, lam=args.lambda_reg)
         alignment_matrices[layer_idx + 1] = W.cpu()
         
         # D. REGISTER HOOK immediately
         # This ensures the next iteration (Layer + 1) sees the intervention from Layer
         layer_module = model.model.layers[layer_idx]
-        hook = get_intervention_hook(W, ALPHA)
+        hook = get_intervention_hook(W, args.alpha)
         handle = layer_module.register_forward_hook(hook)
         active_hooks.append(handle)
         
@@ -126,5 +175,6 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
 
     # 4. Save
-    torch.save(alignment_matrices, OUTPUT_FILE)
-    print("Cascading Training Complete. Hooks removed.")
+    print(f"Saving alignment matrices to {args.output_file}...")
+    torch.save(alignment_matrices, args.output_file)
+    print("Cascading Training Complete. Hooks removed (process ending).")

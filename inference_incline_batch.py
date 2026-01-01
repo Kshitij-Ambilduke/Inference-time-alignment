@@ -20,11 +20,40 @@ PROMPT_TEMPLATE = "Translate the following {src_lang} text to English.\nSource: 
 SUFFIX_TEXT = "\nEnglish:" # The text that comes AFTER the source sentence
 
 lang_id_to_name = {
+    # --- Targets / Common ---
     "eng_Latn": "English",
     "fra_Latn": "French",
     "spa_Latn": "Spanish",
+    "deu_Latn": "German",
+    "hin_Deva": "Hindi",
+    "zho_Hans": "Chinese",
+
+    # --- Latin Script Group ---
     "swh_Latn": "Swahili",
-    "npi_Deva": "Nepali"
+    "lug_Latn": "Luganda",
+    "som_Latn": "Somali",
+    "ibo_Latn": "Igbo",
+    "zul_Latn": "Zulu",
+
+    # --- Devanagari Script Group ---
+    "npi_Deva": "Nepali",
+    "mai_Deva": "Maithili",
+    "bho_Deva": "Bhojpuri",
+    "san_Deva": "Sanskrit",
+    "gom_Deva": "Konkani", 
+
+    # --- Script Control Experiment ---
+    # Both map to "Serbian" so the prompt reads "Translate the following Serbian text..."
+    "srp_Cyrl": "Serbian",
+    "srp_Latn": "Serbian",
+
+    # --- Reverse Directionality ---
+    "pbt_Arab": "Pashto",
+    "urd_Arab": "Urdu",
+
+    # --- Tokenization Density ---
+    "mya_Mymr": "Burmese",
+    "lao_Laoo": "Lao"
 }
 
 def parse_args():
@@ -38,6 +67,7 @@ def parse_args():
     p.add_argument("--debug", action="store_true", help="Enable debug mode")
     p.add_argument("--output-folder", default="/home/shishirk/adityasr/kshitij/results/nepali_to_en", help="Output folder for results")
     p.add_argument("--model-id", default="meta-llama/Meta-Llama-3-8B-Instruct", help="HuggingFace model ID for Llama")
+    p.add_argument("--no-quant", action="store_true", help="Disable 4-bit quantization (load in full precision/fp16)")
     return p.parse_args()
 
 def get_intervention_hook(W, alpha, device, layer_idx, target_idx):
@@ -133,7 +163,7 @@ if __name__ == "__main__":
         ref_sentences = ref_sentences[:10]
         BATCH_SIZE = 2 # Force small batch in debug
 
-    model, tokenizer = load_llama(model_id=MODEL_ID, quantized=True)
+    model, tokenizer = load_llama(model_id=MODEL_ID, quantized=not args.no_quant)
     
     # CRITICAL FOR BATCH GENERATION: Left padding
     tokenizer.padding_side = "left" 

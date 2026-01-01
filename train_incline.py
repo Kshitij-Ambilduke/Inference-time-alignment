@@ -58,6 +58,9 @@ def train_alignment_matrices(input_file, output_file, lam=1e-2):
         X = H_s_dict[layer_idx].double().to(device) 
         Y = H_t_dict[layer_idx].double().to(device)
         
+        # X = H_s_dict[layer_idx].to(device) 
+        # Y = H_t_dict[layer_idx].to(device)
+
         W = ridge_dual(X, Y, lam=lam) # Shape [hidden_dim, hidden_dim]
 
         # Save back to CPU to save memory/disk space

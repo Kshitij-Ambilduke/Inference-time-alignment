@@ -5,6 +5,10 @@ import torch
 import sacrebleu
 from comet import download_model, load_from_checkpoint
 
+# --- Constants ---
+COMET_MODEL_DEFAULT = "Unbabel/wmt22-comet-da"
+AFRICOMET_MODEL_ID = "masakhane/africomet-stl-1.1"
+
 def load_data(file_path):
     """
     Reads the .jsonl file and extracts sources, hypotheses (generated), and references.
@@ -21,69 +25,120 @@ def load_data(file_path):
             hypotheses.append(data["generated"])
             references.append(data["reference"])
 
+    # Basic cleanup
     hypotheses = [h.split("(")[-1] for h in hypotheses]
     hypotheses = [h.split(":")[-1] for h in hypotheses]
     hypotheses = [h.split('\n')[0] for h in hypotheses]
             
     return sources, hypotheses, references
 
-def calculate_sacrebleu(hypotheses, references):
+def calculate_spbleu(hypotheses, references):
     """
-    Calculates the BLEU score using sacrebleu.
+    Calculates BLEU score.
+    For English targets, tokenizer='13a' is standard and comparable to spBLEU reports.
+    If evaluating non-English, consider using tokenizer='spm' if you have the model,
+    or tokenizer='flores101' if supported.
     """
-    # SacreBLEU expects references to be a list of lists (for multi-ref support)
-    # Since we have 1 reference per sentence, we wrap the list of references in another list.
-    bleu = sacrebleu.corpus_bleu(hypotheses, [references])
+    # SacreBLEU expects list of lists for references
+    bleu = sacrebleu.corpus_bleu(hypotheses, [references], tokenize='13a')
     return bleu.score
 
-def calculate_comet(sources, hypotheses, references, gpus=1):
+def calculate_chrf_pp(hypotheses, references):
     """
-    Calculates the COMET score using the wmt22-comet-da model.
+    Calculates chrF++ score.
+    chrF++ is simply chrF with word_order=2.
     """
-    # COMET requires data in a specific dictionary format
+    # chrF score with word_order=2 is equivalent to chrF++
+    chrf = sacrebleu.corpus_chrf(hypotheses, [references], word_order=2)
+    return chrf.score
+
+def calculate_comet_variant(sources, hypotheses, references, model_id, gpus=1):
+    """
+    Calculates COMET scores using the specified model_id.
+    """
     data = [
         {"src": s, "mt": h, "ref": r}
         for s, h, r in zip(sources, hypotheses, references)
     ]
     
-    print("\nLoading COMET model (Unbabel/wmt22-comet-da)...")
-    # This downloads the model to a local cache if not present
-    model_path = download_model("Unbabel/wmt22-comet-da")
-    model = load_from_checkpoint(model_path)
+    print(f"\nLoading COMET model ({model_id})...")
+    try:
+        model_path = download_model(model_id)
+        model = load_from_checkpoint(model_path)
+    except Exception as e:
+        print(f"Error loading model {model_id}: {e}")
+        return None
     
-    # Calculate scores
-    print("Computing COMET scores...")
+    print(f"Computing scores with {model_id}...")
     model_output = model.predict(data, batch_size=8, gpus=gpus)
     
-    # model_output.system_score is the average score for the whole dataset
     return model_output.system_score
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate Translation Output with SacreBLEU and COMET")
+    parser = argparse.ArgumentParser(description="Evaluate Translation Output with Multiple Metrics")
     parser.add_argument("--input_file", type=str, required=True, help="Path to the .jsonl output file")
-    parser.add_argument("--no_cuda", action="store_true", help="Force CPU usage for COMET")
+    parser.add_argument("--no_cuda", action="store_true", help="Force CPU usage for COMET/AfriCOMET")
     
+    # Metric selection arguments
+    parser.add_argument("--metrics", nargs='+', 
+                        choices=['spbleu', 'chrf', 'comet', 'africomet', 'all'], 
+                        default=['all'],
+                        help="List of metrics to calculate. Options: spbleu, chrf, comet, africomet, all")
+
     args = parser.parse_args()
     
+    # Determine which metrics to run
+    metrics_to_run = set(args.metrics)
+    if 'all' in metrics_to_run:
+        metrics_to_run = {'spbleu', 'chrf', 'comet', 'africomet'}
+
     sources, hypotheses, references = load_data(args.input_file)
     print(f"Loaded {len(sources)} sentences.")
-
-    bleu_score = calculate_sacrebleu(hypotheses, references)
-    print(f"\n--- SacreBLEU Score: {bleu_score:.2f} ---")
-
-    gpus = 0 if args.no_cuda or not torch.cuda.is_available() else 1
     
-    comet_score = calculate_comet(sources, hypotheses, references, gpus=gpus)
-    print(f"--- COMET Score:     {comet_score:.4f} ---")
+    results = {}
+    
+    # --- 1. spBLEU ---
+    if 'spbleu' in metrics_to_run:
+        score = calculate_spbleu(hypotheses, references)
+        print(f"--- spBLEU Score: {score:.2f} ---")
+        results['spBLEU'] = score
 
+    # --- 2. chrF++ ---
+    if 'chrf' in metrics_to_run:
+        score = calculate_chrf_pp(hypotheses, references)
+        print(f"--- chrF++ Score: {score:.2f} ---")
+        results['chrF++'] = score
+
+    # Setup GPU for Neural Metrics
+    gpus = 0 if args.no_cuda or not torch.cuda.is_available() else 1
+
+    # --- 3. COMET ---
+    if 'comet' in metrics_to_run:
+        score = calculate_comet_variant(sources, hypotheses, references, COMET_MODEL_DEFAULT, gpus)
+        if score is not None:
+            print(f"--- COMET Score:  {score:.4f} ---")
+            results['COMET'] = score
+
+    # --- 4. AfriCOMET ---
+    if 'africomet' in metrics_to_run:
+        score = calculate_comet_variant(sources, hypotheses, references, AFRICOMET_MODEL_ID, gpus)
+        if score is not None:
+            print(f"--- AfriCOMET Score: {score:.4f} ---")
+            results['AfriCOMET'] = score
+
+    # --- Save Results ---
     summary_folder = os.path.dirname(args.input_file)
     summary_path = os.path.join(summary_folder, "results.txt")
+    
     with open(summary_path, "a") as f:
         f.write('\n')
         f.write(f"File: {args.input_file}\n")
-        f.write(f"SacreBLEU: {bleu_score:.2f}\n")
-        f.write(f"COMET: {comet_score:.4f}\n")
-        f.write('\n')
+        for metric, val in results.items():
+            if isinstance(val, float):
+                f.write(f"{metric}: {val:.4f}\n")
+            else:
+                f.write(f"{metric}: {val}\n")
+        f.write('-' * 20 + '\n')
 
     print(f"\nScores saved to {summary_path}")
 

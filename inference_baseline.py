@@ -9,14 +9,40 @@ from extract_hidden_features import load_llama
 
 # --- Constants ---
 LANG_ID_TO_NAME = {
+    # --- Targets / Common ---
     "eng_Latn": "English",
     "fra_Latn": "French",
     "spa_Latn": "Spanish",
-    "swh_Latn": "Swahili",
-    "npi_Deva": "Nepali",
     "deu_Latn": "German",
     "hin_Deva": "Hindi",
-    "zho_Hans": "Chinese"
+    "zho_Hans": "Chinese",
+
+    # --- Latin Script Group ---
+    "swh_Latn": "Swahili",
+    "lug_Latn": "Luganda",
+    "som_Latn": "Somali",
+    "ibo_Latn": "Igbo",
+    "zul_Latn": "Zulu",
+
+    # --- Devanagari Script Group ---
+    "npi_Deva": "Nepali",
+    "mai_Deva": "Maithili",
+    "bho_Deva": "Bhojpuri",
+    "san_Deva": "Sanskrit",
+    "gom_Deva": "Konkani", 
+
+    # --- Script Control Experiment ---
+    # Both map to "Serbian" so the prompt reads "Translate the following Serbian text..."
+    "srp_Cyrl": "Serbian",
+    "srp_Latn": "Serbian",
+
+    # --- Reverse Directionality ---
+    "pbt_Arab": "Pashto",
+    "urd_Arab": "Urdu",
+
+    # --- Tokenization Density ---
+    "mya_Mymr": "Burmese",
+    "lao_Laoo": "Lao"
 }
 
 def load_flores_data(lang_code, split="devtest"):
