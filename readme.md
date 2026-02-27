@@ -1,7 +1,7 @@
 # Cross-lingual intervention for low-resource Machine Translation
 ### Kshitij Ambilduke & Shubha Sanket Samantaray 
 
-This repository contains the code for the project for the course on Deep Learning at MVA, 2025-2026.
+This repository contains the code for the project for the course on Deep Learning at MVA, 2025-2026. The project is based around the paper *Bridging the Language Gaps in Large Language Models with Inference-Time Cross-Lingual Intervention*[(Link)](https://arxiv.org/abs/2410.12462).
 
 ## Pre-requisites
 
