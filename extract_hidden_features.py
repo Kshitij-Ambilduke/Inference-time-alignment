@@ -1,3 +1,9 @@
+'''
+Extracting hidden features of the last token
+For a given pair of languages
+Which are to be used for training 
+the alignment matrices
+'''
 import torch
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig

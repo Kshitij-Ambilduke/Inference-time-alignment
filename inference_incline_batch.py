@@ -1,3 +1,9 @@
+'''
+INCLINE Intervention generation
+The same file can be used for Improved INCLINE
+Since inference remains the same
+'''
+
 import torch
 from datasets import load_dataset
 from tqdm import tqdm

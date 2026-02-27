@@ -1,4 +1,3 @@
-
 # extracting features from each layers and saving them
 python extract_hidden_features.py \
     --source_lang npi_Deva \

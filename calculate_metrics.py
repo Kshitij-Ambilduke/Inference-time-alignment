@@ -5,7 +5,6 @@ import torch
 import sacrebleu
 from comet import download_model, load_from_checkpoint
 
-# --- Constants ---
 COMET_MODEL_DEFAULT = "Unbabel/wmt22-comet-da"
 AFRICOMET_MODEL_ID = "masakhane/africomet-stl-1.1"
 
@@ -97,13 +96,13 @@ def main():
     
     results = {}
     
-    # --- 1. spBLEU ---
+    # spBLEU 
     if 'spbleu' in metrics_to_run:
         score = calculate_spbleu(hypotheses, references)
         print(f"--- spBLEU Score: {score:.2f} ---")
         results['spBLEU'] = score
 
-    # --- 2. chrF++ ---
+    # chrF++ 
     if 'chrf' in metrics_to_run:
         score = calculate_chrf_pp(hypotheses, references)
         print(f"--- chrF++ Score: {score:.2f} ---")
@@ -112,21 +111,21 @@ def main():
     # Setup GPU for Neural Metrics
     gpus = 0 if args.no_cuda or not torch.cuda.is_available() else 1
 
-    # --- 3. COMET ---
+    # COMET 
     if 'comet' in metrics_to_run:
         score = calculate_comet_variant(sources, hypotheses, references, COMET_MODEL_DEFAULT, gpus)
         if score is not None:
             print(f"--- COMET Score:  {score:.4f} ---")
             results['COMET'] = score
 
-    # --- 4. AfriCOMET ---
+    # AfriCOMET 
     if 'africomet' in metrics_to_run:
         score = calculate_comet_variant(sources, hypotheses, references, AFRICOMET_MODEL_ID, gpus)
         if score is not None:
             print(f"--- AfriCOMET Score: {score:.4f} ---")
             results['AfriCOMET'] = score
 
-    # --- Save Results ---
+    # Save Results 
     summary_folder = os.path.dirname(args.input_file)
     summary_path = os.path.join(summary_folder, "results.txt")
     

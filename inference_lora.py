@@ -1,3 +1,6 @@
+'''
+Inference on LoRA trained model
+'''
 import torch
 import os
 import argparse

@@ -1,3 +1,8 @@
+'''
+For generating baseline results
+Without INCLINE or Improved INCLINE
+Normal Base mode generation
+'''
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
